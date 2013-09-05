@@ -15,11 +15,11 @@
  *
  * =====================================================================================
  */
+ 
 #include <stdlib.h>
 #include <iostream>
 #include <mysql++.h>
 #include "stacksDB.h"
-
 
 void getSamples(const char *pcc_db, const char *pcc_server,
 	       const char *pcc_user, const char *pcc_password, 
@@ -57,6 +57,84 @@ void getSamples(const char *pcc_db, const char *pcc_server,
 						sample.setAvgDepth(depthAvg);
 				}
 				pvSamples_samples->push_back(sample);
+			}
+		}
+	}
+}
+
+
+void getTags(const char *pcc_db, const char *pcc_server,
+	       const char *pcc_user, const char *pcc_password, 
+	       std::vector<Sample> * pvSamples_samples,
+	       std::vector<Tag> * pvTag_tags)
+{
+	std::cerr << "Hello from getTags" << std::endl;
+	//Temporary holder to convert a mysqlpp::string to int.
+	int tmpTagID;
+	//Iterators
+	int i, j, k, sample_count=0;
+	
+	int depthSum = 0;
+	int depthAvg = 0;
+
+	int avgDepthAllSamples = 0;
+	
+	//Calculate average depth of all samples
+	for (i = 0; i < (*pvSamples_samples).size(); i++) {
+		depthSum = depthSum + (*pvSamples_samples)[i].getAvgDepth();
+	}
+	avgDepthAllSamples = depthSum / pvSamples_samples->size() ;
+	std::cerr << "\tCalculated average depth across all samples: " << avgDepthAllSamples << std::endl;
+	
+	
+	// Connect to the sample database.
+	mysqlpp::Connection conn(false);
+	if (conn.connect(pcc_db, pcc_server, pcc_user, pcc_password)) {
+		//Execute the query for the samples, and process the return
+		mysqlpp::Query tagQuery = conn.query("SELECT tag_id, chr, bp, strand FROM catalog_tags");
+
+		if (mysqlpp::StoreQueryResult tagRes = tagQuery.store()) {
+			for (i = 0; i < tagRes.num_rows(); i++) {
+
+				Tag tag;
+				tag.setID(tagRes[i]["tag_id"]);
+				tag.setChr(tagRes[i]["chr"]);
+				tag.setCoordinate(tagRes[i]["bp"]);
+				tag.setStrand(tagRes[i]["strand"]);
+				
+				//Retrieve the depth for every tag for all samples that are greater than or
+				//equal to the average sample depth and calculate tag average depth
+				depthSum = 0;
+				for (k = 0; k < pvSamples_samples->size(); k++) {
+					mysqlpp::Query depthQuery = conn.query("SELECT depth FROM tag_index \
+							WHERE catalog_id=%0:catid AND sample_id=%1:tagid");
+					depthQuery.parse();
+					//For an unknown reason, using tagRes[i]["tag_id"] doesnt work directly in this query.store().
+					//Maybe the arguments have to be of the same type for query.store()?
+					tmpTagID = tagRes[i]["tag_id"];
+					if (mysqlpp::StoreQueryResult depthRes = depthQuery.store(tmpTagID, (*pvSamples_samples)[k].getID())) {
+						//This should only return one row
+						for (j = 0; j < depthRes.num_rows(); j++) {
+							//We should do something less stringent here
+							if ((*pvSamples_samples)[k].getAvgDepth() >= avgDepthAllSamples) {
+								depthSum = depthSum + depthRes[j]["depth"];
+								sample_count++;
+							}
+						}
+					}
+				}
+				if ( sample_count == 0 ){
+					tag.setAvgDepth(0);
+					tag.setFlag("-");
+				}
+
+				if ( sample_count > 0 ){
+					depthAvg = depthSum / sample_count;
+					sample_count=0;
+					tag.setAvgDepth(depthAvg);
+				}
+			
+				pvTag_tags->push_back(tag);
 			}
 		}
 	}
